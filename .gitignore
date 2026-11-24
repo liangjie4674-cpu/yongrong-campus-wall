@@ -3,3 +3,7 @@ data/
 node_modules/
 *.log
 .DS_Store
+
+# 制作方内部笔记，不进公开仓库
+OVERNIGHT.md
+hidden-spec-*.md
