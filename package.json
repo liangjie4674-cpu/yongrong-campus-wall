@@ -1,1 +1,16 @@
-{"description":"永荣校园墙 · 可匿名发帖、先审后发、带浏览量与留言的校园留言墙（零依赖）","engines":{"node":">=18"},"license":"MIT","main":"server.js","name":"yongrong-campus-wall","scripts":{"start":"node server.js"},"version":"1.0.0"}
+{
+  "name": "yongrong-campus-wall",
+  "version": "1.1.0",
+  "description": "永荣校园墙 · 可匿名发帖、先审后发、带浏览量与留言的校园留言墙",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

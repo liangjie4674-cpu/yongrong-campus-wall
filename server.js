@@ -6,12 +6,15 @@
  *   PORT（默认 3000）
  *   ADMIN_PASSWORD（管理员密码；未设置时用默认 yongrong-admin 并在启动日志告警，上线务必修改）
  *   TRUST_PROXY=1 时才信任 X-Forwarded-For（部署在可信反代之后再开；默认只用真实连接 IP，防限流绕过）
- * 数据：data/db.json（原子写入）；上传图片：data/uploads/
+ *   DATABASE_URL=postgres://…（配了就把帖子和图片都存数据库，容器重建不丢；不配则用本地文件）
+ *   PGSSL=1（数据库要求 SSL 时开启）
+ * 数据：DATABASE_URL 优先，否则 data/db.json（原子写入）；上传图片同上
  */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const store = require('./lib/store');
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'yongrong-admin';
@@ -57,50 +60,75 @@ function seed() {
   saveNow();
 }
 
-function load() {
+/** 启动时加载数据：先定存储后端，再把文档读进内存 */
+async function initData() {
+  const mode = await store.init({ dataDir: DATA_DIR, dbFile: DB_FILE, uploadDir: UPLOAD_DIR });
+  console.log(mode === 'postgres'
+    ? '[存储] PostgreSQL 模式：帖子、账号、图片都在数据库里，重新部署不会丢'
+    : '[存储] 本地文件模式：data/db.json —— 容器重建/重新部署会丢数据');
+
+  let parsed = null;
   try {
-    const raw = fs.readFileSync(DB_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.posts)) throw new Error('bad db');
-    db = parsed;
-    if (!db.settings) db.settings = { announcement: '' };
-    if (!Array.isArray(db.users)) db.users = [];
-    // 兼容旧数据：补齐新字段
-    for (const p of db.posts) {
-      if (p.pinned === undefined) p.pinned = false;
-      if (p.image === undefined) p.image = null;
-      if (!Array.isArray(p.comments)) p.comments = [];
-      if (p.userId === undefined) p.userId = null;
+    parsed = await store.readDoc();
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') {
+      // 读取失败（文件损坏 / 权限 / 数据库异常）：本地文件先备份，绝不静默覆盖
+      console.error('数据读取失败:', err.message);
+      if (mode === 'file') {
+        try {
+          if (fs.existsSync(DB_FILE)) fs.renameSync(DB_FILE, DB_FILE + '.bad-' + Date.now());
+        } catch { /* 备份失败也不阻断启动 */ }
+      }
     }
-  } catch (e) {
-    // 数据文件损坏时先备份原文件，绝不静默覆盖
-    try {
-      if (fs.existsSync(DB_FILE)) fs.renameSync(DB_FILE, DB_FILE + '.bad-' + Date.now());
-    } catch { /* 备份失败也不阻断启动 */ }
-    console.error('数据文件读取失败，已备份损坏文件并重建:', e.message);
+  }
+
+  if (!parsed) {
     db = { posts: [], users: [], settings: { announcement: '' } };
     seed();
+    return;
+  }
+  if (!Array.isArray(parsed.posts)) {
+    console.error('数据格式不正确（posts 不是数组），已重建为空库');
+    db = { posts: [], users: [], settings: { announcement: '' } };
+    seed();
+    return;
+  }
+
+  db = parsed;
+  if (!db.settings) db.settings = { announcement: '' };
+  if (!Array.isArray(db.users)) db.users = [];
+  // 兼容旧数据：补齐新字段
+  for (const p of db.posts) {
+    if (p.pinned === undefined) p.pinned = false;
+    if (p.image === undefined) p.image = null;
+    if (!Array.isArray(p.comments)) p.comments = [];
+    if (p.userId === undefined) p.userId = null;
   }
 }
 
 let saveTimer = null;
+let writeChain = Promise.resolve();
+let lastWrite = null; // 最近一次写入结果，便于需要时等待
+
 function save() {
   if (saveTimer) return;
   saveTimer = setTimeout(() => { saveTimer = null; writeDb(); }, 120);
 }
 function writeDb() {
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    const tmp = DB_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-    fs.renameSync(tmp, DB_FILE);
-  } catch (err) {
-    console.error('保存数据失败:', err.message);
-  }
+  // 串行化：保证先发起的写不会后落地
+  writeChain = writeChain
+    .then(() => store.writeDoc(db))
+    .catch(err => console.error('保存数据失败:', err.message));
+  lastWrite = writeChain;
+  return writeChain;
 }
 function saveNow() {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  writeDb();
+  return writeDb();
+}
+/** 退出前等写入落盘，避免最后一次改动丢失 */
+async function flushWrites() {
+  try { await (lastWrite || writeChain); } catch { /* 已在 writeDb 内记录 */ }
 }
 
 /* ---------------- 工具 ---------------- */
@@ -395,14 +423,30 @@ function serveStatic(req, res, urlPath) {
   serveFile(res, resolved);
 }
 
-function serveUpload(req, res, name) {
+async function serveUpload(req, res, name) {
   // name 只允许服务端生成的文件名格式，杜绝穿越
   if (!/^[0-9a-f-]{36}\.(jpg|png|webp|gif)$/.test(name)) return sendJson(res, 404, { error: '文件不存在' });
   // 图片随帖子一起审核：只有已通过帖子的图片可公开访问；待审/未通过的图片仅管理员（带 token）可看
   const ref = '/uploads/' + name;
   const isPublic = db.posts.some(p => p.image === ref && p.status === 'approved');
   if (!isPublic && !adminAuth(req)) return sendJson(res, 404, { error: '文件不存在' });
-  serveFile(res, path.join(UPLOAD_DIR, name));
+
+  let file = null;
+  try {
+    file = await store.getFile(name);
+  } catch (err) {
+    console.error('读取图片失败:', err.message);
+  }
+  if (!file) return sendJson(res, 404, { error: '文件不存在' });
+
+  res.writeHead(200, {
+    'Content-Type': file.mime,
+    'Content-Length': file.bytes.length,
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'public, max-age=86400'
+  });
+  res.end(file.bytes);
 }
 
 /* ---------------- 路由 ---------------- */
@@ -513,7 +557,7 @@ async function handle(req, res) {
     const author = anonymous ? '' : user.name;
     let image = null;
     if (body.image) {
-      image = saveImage(body.image);
+      image = await saveImage(body.image);
       if (!image) return sendJson(res, 400, { error: '图片不合法或超过 5MB' });
     }
     if (!content && !image) return sendJson(res, 400, { error: '正文不能为空' });
@@ -700,8 +744,8 @@ async function handle(req, res) {
   return sendJson(res, 405, { error: '方法不允许' });
 }
 
-/* ---------------- 图片存储（base64 进、文件存 data/uploads） ---------------- */
-function saveImage(dataUrl) {
+/* ---------------- 图片存储（base64 进，存数据库或 data/uploads） ---------------- */
+async function saveImage(dataUrl) {
   const m = /^data:image\/(jpeg|png|webp|gif);base64,([A-Za-z0-9+/=\s]+)$/.exec(String(dataUrl || ''));
   if (!m) return null;
   const buf = Buffer.from(m[2], 'base64');
@@ -709,8 +753,7 @@ function saveImage(dataUrl) {
   const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
   const name = crypto.randomUUID() + '.' + ext;
   try {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    fs.writeFileSync(path.join(UPLOAD_DIR, name), buf);
+    await store.putFile(name, buf);
     return '/uploads/' + name;
   } catch (err) {
     console.error('保存图片失败:', err.message);
@@ -720,11 +763,10 @@ function saveImage(dataUrl) {
 function deleteImage(imagePath) {
   if (!imagePath) return;
   const name = path.basename(imagePath);
-  fs.unlink(path.join(UPLOAD_DIR, name), () => {});
+  store.delFile(name).catch(err => console.error('删除图片失败:', err.message));
 }
 
 /* ---------------- 启动 ---------------- */
-load();
 const server = http.createServer((req, res) => {
   handle(req, res).catch(err => {
     const code = err && err.code === 413 ? 413 : err && err.code === 400 ? 400 : 500;
@@ -732,11 +774,31 @@ const server = http.createServer((req, res) => {
     if (!res.destroyed && !res.writableEnded) sendJson(res, code, { error: code === 500 ? '服务器开小差了' : err.message });
   });
 });
-server.listen(PORT, () => {
-  console.log('永荣校园墙已启动：http://localhost:' + PORT);
-  console.log('管理后台：http://localhost:' + PORT + '/admin');
-  if (!process.env.ADMIN_PASSWORD) console.warn('⚠️ 正在使用默认管理员密码 yongrong-admin，上线前务必设置 ADMIN_PASSWORD 环境变量！');
-  if (!TRUST_PROXY) console.log('限流按真实连接 IP 计算（TRUST_PROXY 未开启）');
+
+async function bootstrap() {
+  await initData(); // 先把数据读进内存，再开始接请求
+  server.listen(PORT, () => {
+    console.log('永荣校园墙已启动：http://localhost:' + PORT);
+    console.log('管理后台：http://localhost:' + PORT + '/admin');
+    if (!process.env.ADMIN_PASSWORD) console.warn('⚠️ 正在使用默认管理员密码 yongrong-admin，上线前务必设置 ADMIN_PASSWORD 环境变量！');
+    if (!process.env.DATABASE_URL) console.warn('⚠️ 未设置 DATABASE_URL，正在用本地文件存数据，容器重建会丢帖子和账号！');
+    if (!TRUST_PROXY) console.log('限流按真实连接 IP 计算（TRUST_PROXY 未开启）');
+  });
+}
+
+bootstrap().catch(err => {
+  console.error('启动失败:', err && err.message);
+  process.exit(1);
 });
-process.on('SIGINT', () => { saveNow(); process.exit(0); });
-process.on('SIGTERM', () => { saveNow(); process.exit(0); });
+
+let closing = false;
+async function shutdown(sig) {
+  if (closing) return;
+  closing = true;
+  console.log('收到 ' + sig + '，正在保存数据…');
+  await flushWrites();
+  await store.close();
+  process.exit(0);
+}
+process.on('SIGINT', () => { shutdown('SIGINT'); });
+process.on('SIGTERM', () => { shutdown('SIGTERM'); });

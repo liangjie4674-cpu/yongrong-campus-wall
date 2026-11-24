@@ -1,119 +1,138 @@
 # 部署到 Abasthan（PaaS）
 
-> 一句话：Abasthan 是 **PaaS（容器）**，不是 VPS。代码从 Git 仓库拉，平台自动构建、启动、配域名和 HTTPS。
-> 你给的 `dashboard.abasthan.com/account/ssh` 是「账号 SSH 公钥」页面，不是服务器页面。
+> Abasthan 是 **PaaS（容器）**，不是 VPS：代码从 Git 仓库拉，平台自动构建、启动、发域名、配 HTTPS。
+> 你之前打开的 `dashboard.abasthan.com/account/ssh` 是「账号 SSH 公钥」页面，不是服务器页面。
 
-## 先看这个：这个项目在 PaaS 上的致命限制
+## 关键前提：一定要配数据库
 
-本项目把**帖子、账号、图片**都存在本地文件里：
+PaaS 的容器文件系统是**临时的**：重新部署、重启、扩缩容都会重置容器，写进容器里的文件会一起消失。
 
-```
-data/db.json     所有帖子 / 留言 / 用户账号
-data/uploads/    上传的图片
-```
+所以本项目做了双后端（见 `lib/store.js`），由环境变量 `DATABASE_URL` 决定：
 
-而 PaaS 的容器文件系统是**临时的**：重新部署、重启、扩缩容都会重置容器，`data/` 里的东西会一起消失。
+| 模式 | 触发条件 | 数据存哪 | 重新部署会丢吗 |
+| --- | --- | --- | --- |
+| PostgreSQL | 配了 `DATABASE_URL` | 库表 `wall_doc`（帖子/账号/留言/设置）+ `wall_file`（图片） | ❌ 不会 |
+| 本地文件 | 没配 | 容器内 `data/db.json` + `data/uploads/` | ✅ 会丢 |
 
-也就是说 —— 在 Abasthan 免费档上，**每次重新部署，全校的帖子和注册账号都会清零**。
+**上线必须走 PostgreSQL 模式**，否则每次重新部署，全校的帖子和注册账号都会清零。
 
-所以：
+表结构由程序启动时自动创建（`CREATE TABLE IF NOT EXISTS`），不需要手动导 SQL。
 
-| 用途 | 是否合适 |
-| --- | --- |
-| 给同学看一眼效果 / 演示 / 验收 | ✅ 可以 |
-| 真的当校园墙长期用 | ❌ 不合适，数据会丢 |
+---
 
-真要长期用，两条路：
+## 部署步骤
 
-1. **换 VPS**（推荐）：阿里云 / 腾讯云轻量，1 核 1G 就够，本项目零依赖，`node server.js` 直接跑，数据落盘不丢。
-2. **改造成数据库版**：把 `data/db.json` 换成 PostgreSQL / MongoDB（Abasthan 有，但数据库要付费档），改动量中等。
+### 1. 创建 PostgreSQL 实例
 
-## 部署步骤（免费档，演示用）
+Dashboard → `+ Create App` → **Data Store Services → PostgreSQL**。
 
-### 1. 把代码推到 Git 仓库
-
-平台只能从 Git 拉代码。仓库已经初始化好了（本地 `main` 分支，221 个文件，`data/` 已排除）：
-
-```bash
-cd yongrong-wall
-
-# 方式 A：用 GitHub CLI（需要先 gh auth login）
-gh repo create yongrong-wall --public --source=. --push
-
-# 方式 B：先在 GitHub 网页上建一个空仓库，再
-git remote add origin git@github.com:你的用户名/yongrong-wall.git
-git push -u origin main
-```
-
-### 2. 加 SSH 公钥（可选，只用于进容器看日志）
-
-在 <https://dashboard.abasthan.com/account/ssh> 点添加，粘贴：
+建好后在它的连接信息里拿到连接串，长这样：
 
 ```
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL1/Bm/v8SBsAi+qHAU+Y2ANFYJvpWjGdnVcA+/nh+G1 yongrong-wall-deploy
+postgres://用户名:密码@主机:5432/库名
 ```
 
-之后连接：
+> 如果平台给的是分开的 host / port / user / password / database 五项，自己拼成上面这一整串。
+> 如果连接串带 `?sslmode=require`，留意下一步的 `PGSSL`。
 
-```bash
-ssh -p 22021 <24位应用ID>@connect.abasthan.com
-# 进去是容器里的 shell，目录 /home/abasthan/app，没有 root
-```
+### 2. 创建 Web Service
 
-> 注意：这个 shell **不是用来部署的**，只是调试用。部署靠 Git。
-
-### 3. 创建应用
-
-Dashboard → 右上 `+ Create App` → **Web Service** → 选你的仓库和 `main` 分支。
-
-配置项照这样填：
+Dashboard → `+ Create App` → **App Services → Web Service** → 选 GitHub 仓库
+`liangjie4674-cpu/yongrong-campus-wall`，分支 `main`。
 
 | 配置项 | 填什么 |
 | --- | --- |
-| App Language | `Node.js`（版本 20 或 22 都行） |
+| App Language & Version | `Node.js`（20 或 22 都行，本项目要求 ≥ 18） |
 | Build Command | `npm install` |
 | Start Command | `npm start` |
 | Root Directory | 留空（仓库根就是项目根） |
-| Instance Type | `Free` |
+| Instance Type | `Free`（演示）／`Starter`（正式用） |
 
-### 4. 环境变量（必须填）
+### 3. 环境变量（三个都要）
 
 | Key | Value | 说明 |
 | --- | --- | --- |
-| `ADMIN_PASSWORD` | 你自己的强密码 | 不填就是默认 `yongrong-admin`，谁都能进后台 |
-| `TRUST_PROXY` | `1` | 平台在前面有反代，不开的话限流会把所有人当成同一个 IP |
+| `ADMIN_PASSWORD` | 你自己的强密码 | **必须改**。不填就是默认 `yongrong-admin`，谁都能进后台 |
+| `DATABASE_URL` | 上一步拿到的 `postgres://…` 整串 | 不填就退回本地文件模式，重新部署会丢数据 |
+| `TRUST_PROXY` | `1` | 平台前面有反代，不开的话限流会把所有人当成同一个 IP |
+| `PGSSL` | `1`（可选） | 数据库要求 SSL 时加。连接串里已带 `sslmode=require` 也可以加 |
 
-`PORT` 不用填，平台会注入，代码里已经读 `process.env.PORT`。
+`PORT` 不用填，平台会注入，代码读 `process.env.PORT`。
 
-### 5. 点 Deploy，看构建日志
+### 4. 点 Deploy，看构建日志
 
-成功后会给你一个 `xxx.abasthan.app` 的域名，能直接访问，HTTPS 自带。
+启动日志里应该出现这两行：
 
-### 6. 验收
+```
+[存储] PostgreSQL 模式：帖子、账号、图片都在数据库里，重新部署不会丢
+永荣校园墙已启动：http://localhost:xxxx
+```
 
-- 打开首页：能看到公益声明、3 条欢迎帖
-- 右上角 👤 注册 → 发帖 → 进 `/admin` 用 `ADMIN_PASSWORD` 审核
+如果看到 `[存储] 本地文件模式` 或 `连接数据库失败，降级为本地文件模式`，说明 `DATABASE_URL` 没生效或连不上 —— **别忽略这条，先去修**。
+
+### 5. 验收清单
+
+- 首页能打开，顶部有橙色「📣 麻烦大家多多宣传此校园墙…永久公益、不收费」提示条
+- 右上角 👤 注册（账号 + 密码 + 昵称）→ 发帖 → 进 `/admin` 用 `ADMIN_PASSWORD` 审核 → 前台能看到
+- 发一条带图的帖子，审核通过后图片能正常显示
+- **最关键一步**：在 Abasthan 点一次「重新部署」，等它起来后刷新页面 —— 刚才发的帖子和注册的账号**还在**，说明数据库接通了
 - 手机浏览器「添加到主屏幕」，图标应该是校徽
 
-## 上线后要盯的事
+---
 
-1. **别在后台随便点重新部署** —— 会清空数据。先想好数据怎么留。
-2. 免费档只给 1 个应用、512MB 内存、0.1 核，人一多就卡。
-3. 面向中国大陆的学生访问境外 PaaS，速度可能不稳；另外按规定，境内提供服务的网站需要 ICP 备案，境外托管不免除这个义务 —— 这点建议先问学校。
-4. 定期备份：进容器 `tar czf /tmp/backup.tgz /home/abasthan/app/data` 再 SFTP 拉下来，能救急。
+## 常见问题
+
+**构建成功但访问 502 / 无法连接**
+容器没监听平台要求的端口。确认 Start Command 是 `npm start`，且没有自己写死 `PORT`。
+
+**启动日志是「本地文件模式」**
+`DATABASE_URL` 没配上，或格式不是 `postgres://` 开头（`postgresql://` 也认）。
+
+**「连接数据库失败」+ 一串报错**
+常见三种：连接串里的密码有特殊字符没转义；数据库只允许同项目内网访问而两个服务不在一个 project；数据库要求 SSL 但没开 `PGSSL=1`。
+
+**进容器看日志 / 调试**
+
+```bash
+ssh -p 22021 <24位应用ID>@connect.abasthan.com
+# 进去是容器 shell，工作目录 /home/abasthan/app，没有 root
+```
+
+> 这个 shell 只用于调试，**不能用来部署**。部署永远靠 Git 推送后重新构建。
+
+**免费档够用吗**
+512MB 内存、0.1 核，几十个人同时刷会卡。给全校用建议至少 `Starter`。
+
+**境外 PaaS 的两个现实问题**
+面向中国大陆学生访问速度可能不稳；另外按规定，境内提供服务的网站需要 ICP 备案，境外托管不免除这个义务 —— 建议先问学校。
+
+---
+
+## 备份
+
+图片也存进数据库了，所以**一个 `pg_dump` 就能全带走**：
+
+```bash
+pg_dump "postgres://用户名:密码@主机:5432/库名" > yongrong-backup-$(date +%F).sql
+```
+
+恢复：`psql "连接串" < yongrong-backup-2026-11-24.sql`
+
+---
 
 ## 想换成 VPS 时
 
-代码不用改，直接：
+代码不用改，VPS 上可以直接用本地文件模式（磁盘是持久的）：
 
 ```bash
-# 服务器上
-cd /var/www && unzip 永荣校园墙-部署包.zip
-cd yongrong-wall
+cd /var/www && git clone https://github.com/liangjie4674-cpu/yongrong-campus-wall.git
+cd yongrong-campus-wall && npm install
 ADMIN_PASSWORD=你的强密码 PORT=3000 node server.js
 
-# 建议 pm2 守护（只跑一个实例，数据是单文件）
+# 建议 pm2 守护
 npm i -g pm2
 ADMIN_PASSWORD=你的强密码 pm2 start server.js --name yongrong-wall
 pm2 save && pm2 startup
 ```
+
+VPS 上如果也想用数据库，照样配 `DATABASE_URL` 即可，两种模式随时切换。

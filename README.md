@@ -19,12 +19,13 @@
 ## 快速开始
 
 ```bash
+npm install        # 只装一个依赖：pg（连数据库用）
 node server.js
 # 打开 http://localhost:3000
 # 管理后台 http://localhost:3000/admin （默认密码 yongrong-admin）
 ```
 
-零第三方依赖，只需要 Node.js ≥ 18，不用 npm install。
+只需要 Node.js ≥ 18。不配数据库也能跑，数据落本地 `data/db.json`（适合本机开发）。
 
 ## 校徽 / 图标
 
@@ -46,29 +47,45 @@ sips -z 192 192 icon-source.png --out icon-192.png
 
 ## 上线部署
 
-1. 把整个文件夹传到服务器，运行：
+**上线一定要配数据库**，否则容器一重建，帖子和账号全没：
 
 ```bash
-ADMIN_PASSWORD=换成你的强密码 PORT=3000 node server.js
+npm install
+DATABASE_URL=postgres://用户名:密码@主机:5432/库名 \
+ADMIN_PASSWORD=换成你的强密码 \
+PORT=3000 node server.js
 ```
 
-2. 建议用 pm2 常驻（**只跑一个实例**，数据是单文件存储，多实例会互相覆盖）：
+- 数据库只要求是 PostgreSQL 12+，启动时自动建表（`wall_doc` 存整份数据、`wall_file` 存图片），**不用手动导入 SQL**。
+- 数据库要求 SSL 时加 `PGSSL=1`。
+- 没配 `DATABASE_URL` 会自动退回本地文件模式，并在启动日志里报警告。
+
+建议用 pm2 常驻（**只跑一个实例**）：
 
 ```bash
 npm i -g pm2
-ADMIN_PASSWORD=换成你的强密码 pm2 start server.js --name yongrong-wall
+ADMIN_PASSWORD=换成你的强密码 DATABASE_URL=… pm2 start server.js --name yongrong-wall
 pm2 save && pm2 startup
 ```
 
-3. 有域名的话，用 Nginx 反代到 127.0.0.1:3000 并配 HTTPS；**反代部署时加环境变量 `TRUST_PROXY=1`**，限流才会按真实用户 IP 计算。
+有域名的话，用 Nginx 反代到 127.0.0.1:3000 并配 HTTPS；**反代部署时加环境变量 `TRUST_PROXY=1`**，限流才会按真实用户 IP 计算。
+
+Abasthan 这类「按 Git 仓库部署」的平台，配置见 [DEPLOY-ABASTHAN.md](DEPLOY-ABASTHAN.md)。
 
 ## 数据
 
-- 所有数据存在 `data/db.json`（帖子、留言、点赞、浏览量、**用户账号**），上传图片在 `data/uploads/`，备份一起复制即可。
+两种后端，由 `DATABASE_URL` 决定，业务代码完全一样：
+
+| 模式 | 触发条件 | 存哪 | 重新部署会丢吗 |
+| --- | --- | --- | --- |
+| PostgreSQL | 配了 `DATABASE_URL` | 库里 `wall_doc`（帖子/账号/留言/设置）+ `wall_file`（图片） | 不会 |
+| 本地文件 | 没配 | `data/db.json` + `data/uploads/` | 会（容器重建即丢） |
+
 - 用户密码用 scrypt 加盐哈希存储（`salt` + `hash`），不存明文；登录态是 30 天有效的 token。
 - 数据文件损坏时服务会先把坏文件改名为 `db.json.bad-<时间戳>` 再重建，不会静默丢数据。
-- 首次启动会自动生成 3 条管理员欢迎帖子。
+- 首次启动（空库）会自动生成 3 条管理员欢迎帖子。
 - 管理员密码只通过环境变量 `ADMIN_PASSWORD` 设置，不要写进代码；未设置时启动日志会告警。
+- 备份：`pg_dump` 导出整个库即可，图片也在库里，一个文件全带走。
 
 ## 账号与权限
 
@@ -87,7 +104,8 @@ pm2 save && pm2 startup
 ## 目录
 
 ```
-server.js          后端（原生 http，零依赖）
+server.js          后端（原生 http）+ 路由
+lib/store.js       存储层（PostgreSQL / 本地文件双后端，按 DATABASE_URL 自动选择）
 public/
   index.html       墙面主页
   styles.css       全部样式（含深色模式）
