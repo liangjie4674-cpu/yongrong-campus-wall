@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#FAF5EC">
+<title>永荣校园墙</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/fonts.css">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img class="brand-mark" src="/icon-192.png" alt="重庆市荣昌区永荣中学校徽" width="42" height="42">
+    <div class="brand-text">
+      <h1>永荣校园墙</h1>
+      <p>说想说的，墙都在听</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button class="icon-btn" id="accountBtn" aria-label="账号">👤</button>
+    <button class="icon-btn" id="searchToggle" aria-label="搜索">🔍</button>
+  </div>
+</header>
+
+<div class="public-notice">
+  <span class="public-notice-ico" aria-hidden="true">📣</span>
+  <p>麻烦大家多多宣传此校园墙，让全校的人都能用上。本站保证<strong>永久公益、不收费</strong>。</p>
+</div>
+
+<div class="search-row" id="searchRow" hidden>
+  <input id="searchInput" type="search" placeholder="搜一搜墙上的内容…" enterkeyhint="search">
+</div>
+
+<section class="manifesto" id="manifesto">
+  <button class="manifesto-close" id="manifestoClose" aria-label="关闭">✕</button>
+  <p class="manifesto-title">这里崇尚自由言论</p>
+  <p class="manifesto-text">对学校有不满，尽管提出来；想表白，尽管说；有心里话，不必藏着。匿名、实名都可以——畅所欲言，先审后发，文明发言。</p>
+</section>
+
+<div class="announce-bar" id="announceBar" hidden><span aria-hidden="true">📢</span><span id="announceText"></span></div>
+
+<nav class="chips" id="chips" aria-label="分类"></nav>
+
+<div class="sort-row">
+  <button class="sort-btn active" data-sort="new">最新</button>
+  <button class="sort-btn" data-sort="hot">最热</button>
+  <span class="sort-hint" id="wallCount"></span>
+</div>
+
+<section class="hot-strip" id="hotStrip" aria-label="热门榜" hidden>
+  <div class="hot-head">
+    <h2>🔥 热门榜</h2>
+    <span>此刻最受关注</span>
+  </div>
+  <div class="hot-scroll" id="hotScroll"></div>
+</section>
+
+<main id="feed" class="feed" aria-live="polite"></main>
+<div class="feed-tail" id="feedTail" hidden>加载中…</div>
+<div class="feed-sentinel" id="feedSentinel" aria-hidden="true"></div>
+
+<div class="empty" id="emptyState" hidden>
+  <div class="empty-emoji">🧱</div>
+  <p class="empty-title">这面墙还空着</p>
+  <p class="empty-sub">来贴第一张纸条吧</p>
+</div>
+
+<div class="skeleton-wrap" id="skeleton">
+  <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+</div>
+
+<!-- 底部导航 -->
+<nav class="tabbar">
+  <button class="tab active" data-view="wall"><span class="tab-ico">🧱</span>墙</button>
+  <button class="fab" id="composeFab" aria-label="发布">＋</button>
+  <button class="tab" data-view="mine"><span class="tab-ico">📮</span>我的投稿</button>
+</nav>
+
+<!-- 我的投稿 -->
+<section id="mineView" class="mine-view" hidden>
+  <h2 class="mine-title">我的投稿</h2>
+  <div id="mineList"></div>
+  <div class="empty" id="mineEmpty" hidden>
+    <div class="empty-emoji">📭</div>
+    <p class="empty-title">还没有投过稿</p>
+    <p class="empty-sub">点中间的＋，把想说的话贴上墙</p>
+  </div>
+</section>
+
+<!-- 发布抽屉 -->
+<div class="sheet-mask" id="composeMask" hidden></div>
+<section class="sheet" id="composeSheet" hidden aria-label="发布帖子">
+  <div class="sheet-handle"></div>
+  <h2 class="sheet-title">贴一张纸条</h2>
+  <div class="cat-select" id="catSelect"></div>
+  <textarea id="composeContent" rows="5" maxlength="500" placeholder="想说点什么…（最多 500 字）"></textarea>
+  <div class="char-count"><span id="charNow">0</span>/500</div>
+  <div class="compose-img">
+    <button type="button" class="img-add-btn" id="imgAddBtn">🖼 添加图片</button>
+    <input type="file" id="imgInput" accept="image/*" hidden>
+    <div class="img-preview" id="imgPreview" hidden>
+      <img id="imgPreviewThumb" alt="图片预览">
+      <button type="button" class="img-remove" id="imgRemove" aria-label="删除图片">✕</button>
+    </div>
+  </div>
+  <div class="identity-bar" id="composeIdentity"></div>
+  <label class="switch-row">
+    <span>匿名发布<small>别人只会看到“匿名同学”</small></span>
+    <span class="switch"><input type="checkbox" id="composeAnon"><i></i></span>
+  </label>
+  <button class="primary-btn" id="composeSubmit">提交审核</button>
+  <p class="sheet-note">提交后需管理员审核，通过了才会出现在墙上</p>
+</section>
+
+<!-- 详情抽屉 -->
+<div class="sheet-mask" id="detailMask" hidden></div>
+<section class="sheet detail-sheet" id="detailSheet" hidden aria-label="帖子详情">
+  <div class="sheet-handle"></div>
+  <div id="detailBody"></div>
+  <h3 class="comments-title">留言 <span id="commentCount"></span></h3>
+  <div id="commentList" class="comment-list"></div>
+  <div class="comment-form">
+    <textarea id="commentContent" rows="2" maxlength="200" placeholder="留句话…（最多 200 字，同样需要审核）"></textarea>
+    <div class="comment-form-row">
+      <span class="identity-mini" id="commentIdentity"></span>
+      <label class="mini-anon"><input type="checkbox" id="commentAnon"> 匿名</label>
+      <button class="primary-btn small" id="commentSubmit">留言</button>
+    </div>
+  </div>
+</section>
+
+<!-- 账号抽屉：注册 / 登录 / 个人资料 -->
+<div class="sheet-mask" id="authMask" hidden></div>
+<section class="sheet" id="authSheet" hidden aria-label="账号">
+  <div class="sheet-handle"></div>
+  <h2 class="sheet-title" id="authTitle">登录 / 注册</h2>
+
+  <div id="authForms">
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-mode="login">登录</button>
+      <button class="auth-tab" data-mode="register">注册</button>
+    </div>
+    <div class="auth-fields">
+      <input id="authUsername" type="text" maxlength="20" placeholder="账号：3-20 位字母、数字、下划线或中文" autocomplete="username" autocapitalize="off" spellcheck="false">
+      <div id="authNameWrap" hidden>
+        <input id="authName" type="text" maxlength="16" placeholder="昵称：墙上显示的名字" autocomplete="nickname">
+      </div>
+      <input id="authPassword" type="password" maxlength="64" placeholder="密码：至少 6 位" autocomplete="current-password">
+      <div id="authPassword2Wrap" hidden>
+        <input id="authPassword2" type="password" maxlength="64" placeholder="再输一次密码" autocomplete="new-password">
+      </div>
+    </div>
+    <button class="primary-btn" id="authSubmit">登录</button>
+    <p class="sheet-note" id="authNote">注册不需要邮箱或手机验证，填账号、密码、昵称就能用</p>
+  </div>
+
+  <div id="authProfile" hidden>
+    <div class="account-card">
+      <div class="account-avatar" id="accountAvatar">荣</div>
+      <div class="account-info">
+        <b id="accountName"></b>
+        <span id="accountUsername"></span>
+      </div>
+    </div>
+    <label class="field-label" for="profileName">修改昵称</label>
+    <input id="profileName" type="text" maxlength="16" placeholder="新昵称">
+    <button class="primary-btn" id="profileSave">保存昵称</button>
+    <button class="ghost-btn danger" id="logoutBtn">退出登录</button>
+  </div>
+</section>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

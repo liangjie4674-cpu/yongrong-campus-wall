@@ -1,0 +1,5 @@
+# 运行时数据（不要提交：帖子、账号、上传的图片都在这里）
+data/
+node_modules/
+*.log
+.DS_Store
